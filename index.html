@@ -58,22 +58,16 @@ const PDEF = [
   { name:'P4', col:'#ffd23b', lit:'#ffe999', dark:'#9a7400' }
 ];
 
-/* Two key layouts. Physically spread out so four hands fit on one board.
-   index 0 = CCW / "left", index 1 = CW / "right". Multiple codes per key
-   so numpad works with NumLock on or off. */
+/* Two key layouts. One key per player — a single press passes the bomb on.
+   Physically spread out so four hands fit on one board. Multiple codes per
+   player so numpad works with NumLock on or off. */
 const LAYOUTS = [
   { name:'STANDARD',
-    codes: [ [['KeyQ'],['KeyE']],
-             [['ArrowLeft'],['ArrowRight']],
-             [['KeyB'],['KeyM']],
-             [['Numpad1','End'],['Numpad3','PageDown']] ],
-    labels:[ ['Q','E'], ['◀','▶'], ['B','M'], ['N1','N3'] ] },
+    codes: [ ['KeyQ'], ['ArrowLeft'], ['KeyB'], ['Numpad1','End'] ],
+    labels:[ 'Q', '◀', 'B', 'N1' ] },
   { name:'NO-NUMPAD',
-    codes: [ [['KeyQ'],['KeyE']],
-             [['KeyZ'],['KeyC']],
-             [['Comma'],['Period']],
-             [['ArrowLeft'],['ArrowRight']] ],
-    labels:[ ['Q','E'], ['Z','C'], [',','.'], ['◀','▶'] ] }
+    codes: [ ['KeyQ'], ['KeyZ'], ['Comma'], ['ArrowLeft'] ],
+    labels:[ 'Q', 'Z', ',', '◀' ] }
 ];
 
 /* ------------------------------------------------------------ powerups */
@@ -396,12 +390,11 @@ function showBanner(name, icon, glow, mood){
 let keyMap = {};
 function buildKeyMap(){
   keyMap = {};
-  LAYOUTS[G.layout].codes.forEach((pl, pi) =>
-    pl.forEach((codes, dir) =>
-      codes.forEach(c => { keyMap[c] = { p: pi, dir }; })));
+  LAYOUTS[G.layout].codes.forEach((codes, pi) =>
+    codes.forEach(c => { keyMap[c] = { p: pi }; }));
 }
 buildKeyMap();
-const keyLabel = (pi, dir) => LAYOUTS[G.layout].labels[pi][dir];
+const keyLabel = pi => LAYOUTS[G.layout].labels[pi];
 
 const BLOCK = ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space','Tab','End','PageDown','Home','PageUp'];
 
@@ -446,7 +439,7 @@ function onKey(code){
     case ST.READY:
     case ST.PLAY:
       if (code === 'Escape'){ G.prev = G.state; G.state = ST.PAUSE; musicStop(); SFX.ui(); break; }
-      if (k && G.state === ST.PLAY) tryThrow(k.p, k.dir);
+      if (k && G.state === ST.PLAY) tryThrow(k.p);
       break;
 
     case ST.PAUSE:
@@ -539,14 +532,14 @@ function launch(from, fromIdx, toIdx, isRebound){
   }
 }
 
-function tryThrow(pi, dir){
+function tryThrow(pi){
   const b = G.bomb;
   if (b.state !== 'held' || b.holder !== pi) return;      // only the holder throws
   if (b.hold < b.lock){                                   // still stuck / cooling down
     if (b.sticky) players[pi].sweat = 1;
     return;
   }
-  const d = G.fx.reverse > 0 ? 1 - dir : dir;             // Reverse flips the meaning
+  const d = G.fx.reverse > 0 ? 0 : 1;                     // normally clockwise; Reverse flips it
   const tgt = neighbour(pi, d);
   if (tgt === pi) return;
 
@@ -1238,26 +1231,23 @@ function drawFace(face, R, panic, scale){
 
 function drawNamePlate(p, dead, scale){
   const y = p.y + 22;
-  const l = LAYOUTS[G.layout].labels[p.i];
+  const l = keyLabel(p.i);
   ctx.save();
   ctx.globalAlpha *= dead ? 0.8 : 1;
   txt(p.name, p.x, y, 20 * scale, dead ? '#8d86a6' : p.col, 'center', 5);
   if (!dead){
-    /* key indicators, always visible during play.
-       Left cap = counter-clockwise, right cap = clockwise; they swap
-       (and turn pink) while the Reverse powerup is running. */
+    /* key indicator, always visible during play. The arrow beside it shows
+       which way the pass goes — it flips (and turns pink) under Reverse. */
     const flip = G.fx.reverse > 0;
-    const kw = 42, gap = 7, totalW = kw * 2 + gap;
-    for (let d = 0; d < 2; d++){
-      const kx = p.x - totalW/2 + d * (kw + gap);
-      ctx.fillStyle = 'rgba(10,8,20,.78)';
-      ctx.strokeStyle = flip ? '#ff6ec7' : hexA(p.col, 0.9);
-      ctx.lineWidth = 2.5;
-      roundRect(kx, y + 12, kw, 24, 7); ctx.fill(); ctx.stroke();
-      txt(l[flip ? 1 - d : d], kx + kw/2, y + 24.5, 14, '#e9e5ff', 'center', 0);
-    }
-    txt('↺', p.x - totalW/2 - 11, y + 24.5, 15, flip ? '#ff6ec7' : 'rgba(200,190,240,.7)', 'center', 0);
-    txt('↻', p.x + totalW/2 + 11, y + 24.5, 15, flip ? '#ff6ec7' : 'rgba(200,190,240,.7)', 'center', 0);
+    const kw = 42, totalW = kw;
+    const kx = p.x - totalW/2;
+    ctx.fillStyle = 'rgba(10,8,20,.78)';
+    ctx.strokeStyle = flip ? '#ff6ec7' : hexA(p.col, 0.9);
+    ctx.lineWidth = 2.5;
+    roundRect(kx, y + 12, kw, 24, 7); ctx.fill(); ctx.stroke();
+    txt(l, kx + kw/2, y + 24.5, 14, '#e9e5ff', 'center', 0);
+    txt(flip ? '↺' : '↻', p.x + totalW/2 + 11, y + 24.5, 15,
+        flip ? '#ff6ec7' : 'rgba(200,190,240,.7)', 'center', 0);
   }
   ctx.restore();
 }
@@ -1616,13 +1606,13 @@ function drawTitle(){
 function drawLobby(){
   drawBackground();
   txt('WHO IS PLAYING?', W/2, 74, 52, '#ffffff', 'center', 10);
-  txt('PRESS EITHER OF YOUR KEYS TO JOIN', W/2, 122, 20, '#a99ee0', 'center', 4);
+  txt('PRESS YOUR KEY TO JOIN', W/2, 122, 20, '#a99ee0', 'center', 4);
 
   const n = 4, cw = 246, gap = 22;
   const totalW = n * cw + (n-1) * gap;
   let x = W/2 - totalW/2;
   for (let i = 0; i < n; i++){
-    const p = players[i], l = LAYOUTS[G.layout].labels[i];
+    const p = players[i], l = keyLabel(i);
     const y = 168, ch = 340;
     const inT = clamp(p.joinT / 0.35, 0, 1);
     const pop = p.joined ? easeOutBack(inT) : 1;
@@ -1652,14 +1642,14 @@ function drawLobby(){
       txt('PRESS TO JOIN', x + cw/2, y + 306, 17, '#6f6796', 'center', 4);
     }
 
-    /* key caps */
-    for (let d = 0; d < 2; d++){
-      const kw = 84, kx = x + cw/2 - (kw + 10) + d * (kw + 20);
+    /* key cap */
+    {
+      const kw = 84, kx = x + cw/2 - kw/2;
       ctx.fillStyle = 'rgba(8,6,18,.8)';
       ctx.strokeStyle = p.joined ? p.col : 'rgba(255,255,255,.22)'; ctx.lineWidth = 3;
       roundRect(kx, y + 26, kw, 52, 10); ctx.fill(); ctx.stroke();
-      txt(l[d], kx + kw/2, y + 52, 24, p.joined ? '#ffffff' : '#8a82ad', 'center', 4);
-      txt(d ? 'CLOCKWISE' : 'COUNTER-CW', kx + kw/2, y + 92, 11, '#8a82ad', 'center', 3);
+      txt(l, kx + kw/2, y + 52, 24, p.joined ? '#ffffff' : '#8a82ad', 'center', 4);
+      txt('PASS BOMB', kx + kw/2, y + 92, 11, '#8a82ad', 'center', 3);
     }
     ctx.restore();
     x += cw + gap;
