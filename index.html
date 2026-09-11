@@ -60,15 +60,30 @@ const PDEF = [
 
 /* Two key layouts. One key per player — a single press passes the bomb on.
    Physically spread out so four hands fit on one board. Multiple codes per
-   player so numpad works with NumLock on or off. */
+   player so numpad works with NumLock on or off.
+
+   Each player also gets a pair of "shake" keys used only to wriggle out of a
+   Sticky Bomb. They are deliberately disjoint from every pass key so one
+   player's panic-mashing can never throw somebody else's bomb. */
 const LAYOUTS = [
   { name:'STANDARD',
     codes: [ ['KeyQ'], ['ArrowLeft'], ['KeyB'], ['Numpad1','End'] ],
-    labels:[ 'Q', '◀', 'B', 'N1' ] },
+    labels:[ 'Q', '◀', 'B', 'N1' ],
+    shake: [ [['KeyA'],['KeyD']],
+             [['ArrowUp'],['ArrowDown']],
+             [['KeyN'],['KeyM']],
+             [['Numpad7','Home'],['Numpad9','PageUp']] ],
+    shakeLabels:[ ['A','D'], ['▲','▼'], ['N','M'], ['N7','N9'] ] },
   { name:'NO-NUMPAD',
     codes: [ ['KeyQ'], ['KeyZ'], ['Comma'], ['ArrowLeft'] ],
-    labels:[ 'Q', 'Z', ',', '◀' ] }
+    labels:[ 'Q', 'Z', ',', '◀' ],
+    shake: [ [['KeyW'],['KeyE']],
+             [['KeyX'],['KeyC']],
+             [['Period'],['Slash']],
+             [['ArrowUp'],['ArrowDown']] ],
+    shakeLabels:[ ['W','E'], ['X','C'], ['.','/'], ['▲','▼'] ] }
 ];
+const SEQ_LEN = 5;                       // sticky escape sequence length
 
 /* ------------------------------------------------------------ powerups */
 /* mood: 'bad' = hurts someone (red banner), 'good' = helps (blue banner),
@@ -80,8 +95,7 @@ const POWERUPS = [
   { id:'sticky',  name:'STICKY BOMB', icon:'sticky',  glow:'#ffc043', w:15, mood:'bad'   },
   { id:'swap',    name:'HOT SWAP',    icon:'swap',    glow:'#b96bff', w:12, mood:'chaos' },
   { id:'blind',   name:'BLIND TOSS',  icon:'blind',   glow:'#9aa3b8', w:10, mood:'chaos' },
-  { id:'shield',  name:'SHIELD',      icon:'shield',  glow:'#e8f1ff', w: 8, mood:'good'  },
-  { id:'reverse', name:'REVERSE',     icon:'reverse', glow:'#ff6ec7', w:10, mood:'chaos' }
+  { id:'shield',  name:'SHIELD',      icon:'shield',  glow:'#e8f1ff', w: 8, mood:'good'  }
 ];
 const PW_TOTAL = POWERUPS.reduce((s,p) => s + p.w, 0);
 function rollPowerup(){
@@ -113,7 +127,8 @@ const G = {
   roundTime: 0, readyT: 0, endT: 0, winT: 0,
   victim: -1, winner: -1,
   nextPw: 0, pw: null,
-  fx: { freeze:0, warp:0, blind:0, reverse:0 },
+  fx: { freeze:0, warp:0, blind:0 },
+  qmarks: [],               // BLIND TOSS background question marks
   shake: 0, flash: 0, zoom: 0,
   banner: null,
   tickAcc: 0,
@@ -235,7 +250,10 @@ const SFX = {
                      A.tone({ f:330, f2:300, dur:0.7, type:'sine', gain:0.12 }); },
     shield:  () => { A.tone({ f:2600, dur:0.35, type:'sine', gain:0.24 });
                      A.tone({ f:3900, dur:0.25, type:'sine', gain:0.14, delay:0.02 }); },
-    reverse: () => A.tone({ f:1400, f2:300, dur:0.45, type:'sawtooth', gain:0.2 })
+    /* sticky escape: one blip per correct key, a buzz on a wrong one */
+    seqHit:  () => A.tone({ f:880, f2:1320, dur:0.09, type:'square', gain:0.18 }),
+    seqMiss: () => A.tone({ f:200, f2:120, dur:0.16, type:'sawtooth', gain:0.2 }),
+    seqDone: () => { [784,1046,1568].forEach((f,i)=>A.tone({f,dur:0.22,type:'square',gain:0.2,delay:i*0.06})); }
   }
 };
 
@@ -388,13 +406,19 @@ function showBanner(name, icon, glow, mood){
    INPUT
    ===================================================================== */
 let keyMap = {};
+let shakeMap = {};
 function buildKeyMap(){
   keyMap = {};
   LAYOUTS[G.layout].codes.forEach((codes, pi) =>
     codes.forEach(c => { keyMap[c] = { p: pi }; }));
+  shakeMap = {};
+  LAYOUTS[G.layout].shake.forEach((pl, pi) =>
+    pl.forEach((codes, si) =>
+      codes.forEach(c => { shakeMap[c] = { p: pi, s: si }; })));
 }
 buildKeyMap();
 const keyLabel = pi => LAYOUTS[G.layout].labels[pi];
+const shakeLabel = (pi, si) => LAYOUTS[G.layout].shakeLabels[pi][si];
 
 const BLOCK = ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space','Tab','End','PageDown','Home','PageUp'];
 
@@ -439,7 +463,11 @@ function onKey(code){
     case ST.READY:
     case ST.PLAY:
       if (code === 'Escape'){ G.prev = G.state; G.state = ST.PAUSE; musicStop(); SFX.ui(); break; }
-      if (k && G.state === ST.PLAY) tryThrow(k.p);
+      if (G.state === ST.PLAY){
+        const sk = shakeMap[code];
+        if (sk){ shakeInput(sk.p, sk.s); break; }
+        if (k) tryThrow(k.p);
+      }
       break;
 
     case ST.PAUSE:
@@ -539,7 +567,7 @@ function tryThrow(pi){
     if (b.sticky) players[pi].sweat = 1;
     return;
   }
-  const d = G.fx.reverse > 0 ? 0 : 1;                     // normally clockwise; Reverse flips it
+  const d = 1;                                            // the bomb always travels clockwise
   const tgt = neighbour(pi, d);
   if (tgt === pi) return;
 
@@ -549,7 +577,7 @@ function tryThrow(pi){
   const p = players[pi];
   p.thr = 0.34; p.thrDir = d;
   const h = handPos(pi);
-  b.pendingSticky = false; b.sticky = false;
+  b.pendingSticky = false; b.sticky = false; b.seq = null; b.seqPos = 0;
   launch(h, pi, tgt, false);
   SFX.throwW();
   /* speed lines in the throw direction */
@@ -581,6 +609,8 @@ function arrive(idx){
   b.state = 'held'; b.holder = idx; b.hold = 0;
   b.sticky = !!b.pendingSticky;
   b.lock = 0.5 + (b.pendingSticky ? 2.0 : 0);       // base cooldown (+ sticky)
+  b.seq = b.sticky ? makeSeq() : null;              // shake-off sequence
+  b.seqPos = 0; b.seqBad = 0;
   b.pendingSticky = false;
   p.catchT = 0.22;
   SFX.catchT();
@@ -589,6 +619,43 @@ function arrive(idx){
     puff(b.to.x, b.to.y, '#ffc043', 6);
     floatText('STUCK!', p.x, p.y - 120, '#ffc043', 26);
   }
+}
+
+/* The Sticky Bomb can be shaken off early by typing a random 5-key sequence
+   on your two shake keys. Get it right and the glue lets go immediately,
+   however much of the sticky timer is left; a wrong key restarts it. */
+function makeSeq(){
+  const q = [];
+  for (let i = 0; i < SEQ_LEN; i++) q.push(Math.random() < 0.5 ? 0 : 1);
+  return q;
+}
+
+function shakeInput(pi, si){
+  const b = G.bomb;
+  if (!b.sticky || b.state !== 'held' || b.holder !== pi || !b.seq) return;
+  const p = players[pi];
+  if (b.seq[b.seqPos] === si){
+    b.seqPos++;
+    SFX.pw.seqHit();
+    const h = handPos(pi);
+    burst(h.x, h.y, '#ffc043', 5, { spMax: 150, g: 220, life: 0.4, size: 5 });
+    if (b.seqPos >= b.seq.length) unstick(pi);
+  } else {
+    b.seqPos = 0; b.seqBad = 0.4;                   // flash red, start over
+    p.sweat = 1;
+    SFX.pw.seqMiss();
+  }
+}
+
+function unstick(pi){
+  const b = G.bomb, p = players[pi];
+  b.sticky = false; b.seq = null; b.seqPos = 0;
+  b.lock = Math.min(b.lock, b.hold);                // free to throw right now
+  SFX.pw.seqDone();
+  puff(p.x, p.y - 60, '#ffc043', 12);
+  ringWave(p.x, p.y - 50, '#ffe08a', 24, 110, 0.4);
+  floatText('UNSTUCK!', p.x, p.y - 120, '#ffe08a', 28);
+  G.shake = Math.max(G.shake, 5);
 }
 
 /* =====================================================================
@@ -616,7 +683,6 @@ function collectPowerup(){
     case 'freeze':  G.fx.freeze = 2.5; break;
     case 'warp':    G.fx.warp = 3.0; break;
     case 'blind':   G.fx.blind = 3.0; break;
-    case 'reverse': G.fx.reverse = 4.0; break;
     case 'sticky':  b.pendingSticky = true; break;
     case 'shield':  if (b.state === 'flight') players[b.toIdx].shield = true; break;
     case 'rebound': doRebound(); break;
@@ -642,7 +708,7 @@ function doHotSwap(){
   puff(cur.x, cur.y, '#b96bff', 14);
   const tgt = pick(aliveIds());
   b.state = 'held'; b.holder = tgt; b.hold = 0; b.lock = 0.5;
-  b.pendingSticky = false; b.sticky = false;
+  b.pendingSticky = false; b.sticky = false; b.seq = null; b.seqPos = 0;
   const hp = handPos(tgt);
   puff(hp.x, hp.y, '#b96bff', 14);
   ringWave(hp.x, hp.y, '#b96bff', 10, 80, 0.4);
@@ -677,13 +743,14 @@ function beginRound(){
   G.bomb = {
     state: 'held', holder: pick(aliveIds()),
     time: t, max: t, hold: 0, lock: 0, sticky: false, pendingSticky: false,
+    seq: null, seqPos: 0, seqBad: 0,
     from: null, to: null, ctrl: null, fromIdx: -1, toIdx: -1, t: 0, dur: 0.5,
     rebound: false, trail: []
   };
   players.forEach(p => { p.shield = false; p.sweat = 0; p.thr = 0; if (p.alive) p.hitT = -1; });
   G.pw = null;
   G.nextPw = Math.max(2, rnd(d.pmin, d.pmax));
-  G.fx = { freeze:0, warp:0, blind:0, reverse:0 };
+  G.fx = { freeze:0, warp:0, blind:0 }; G.qmarks.length = 0;
   G.roundTime = 0; G.readyT = 0; G.tickAcc = 0;
   G.victim = -1;
   G.state = ST.READY;
@@ -721,7 +788,7 @@ function explode(){
         rot: rnd(0,TAU), vr: rnd(-10,10) });
 
   p.hitT = 0;
-  G.fx = { freeze:0, warp:0, blind:0, reverse:0 };
+  G.fx = { freeze:0, warp:0, blind:0 }; G.qmarks.length = 0;
   G.stats.rounds++;
 
   if (G.mode === 'lives'){
@@ -803,6 +870,8 @@ function update(dt){
       if (b.state === 'held'){
         b.hold += dt;
         G.stats.per[b.holder].totalHold += dt;
+        if (b.seqBad > 0) b.seqBad = Math.max(0, b.seqBad - dt);
+        if (b.sticky && b.hold >= b.lock){ b.sticky = false; b.seq = null; b.seqPos = 0; }
       }
 
       /* flight */
@@ -832,6 +901,18 @@ function update(dt){
           G.pw = null;
           G.nextPw = G.roundTime + rnd(diff().pmin, diff().pmax);
         }
+      }
+
+      /* BLIND TOSS: question marks swim up through the arena */
+      if (G.fx.blind > 0 && Math.random() < dt * 26)
+        G.qmarks.push({ x: rnd(60, W - 60), y: H + 40, vy: rnd(-190, -70),
+                        sw: rnd(0.6, 1.6), ph: rnd(0, TAU), size: rnd(26, 78),
+                        rot: rnd(-0.5, 0.5), vr: rnd(-1.4, 1.4), t: 0,
+                        life: rnd(2.6, 4.2) });
+      for (let i = G.qmarks.length - 1; i >= 0; i--){
+        const q = G.qmarks[i];
+        q.t += dt; q.y += q.vy * dt; q.rot += q.vr * dt;
+        if (q.t >= q.life || q.y < -80) G.qmarks.splice(i, 1);
       }
 
       /* panic sweat + heartbeat ticking */
@@ -925,12 +1006,6 @@ function drawIcon(id, x, y, size, col){
       ctx.quadraticCurveTo(-20,44,-35,14);
       ctx.lineTo(-40,-32); ctx.closePath(); ctx.fill();
       break;
-    case 'reverse':
-      ctx.lineWidth = 15;
-      ctx.beginPath(); ctx.moveTo(-28,40); ctx.lineTo(-28,-8);
-      ctx.arc(0,-8,28,Math.PI,0); ctx.lineTo(28,14); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(8,12); ctx.lineTo(48,12); ctx.lineTo(28,46); ctx.closePath(); ctx.fill();
-      break;
   }
   ctx.restore();
 }
@@ -964,6 +1039,23 @@ function roundRect(x, y, w, h, r){
 /* =====================================================================
    DRAWING — background & arena
    ===================================================================== */
+/* BLIND TOSS ambience — drifting question marks behind the action.       */
+function drawQMarks(){
+  if (!G.qmarks.length) return;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (const q of G.qmarks){
+    const fade = Math.min(q.t / 0.4, 1) * clamp((q.life - q.t) / 0.8, 0, 1);
+    ctx.save();
+    ctx.globalAlpha = fade * 0.5;
+    ctx.translate(q.x + Math.sin(G.time * q.sw + q.ph) * 26, q.y);
+    ctx.rotate(q.rot);
+    txt('?', 0, 0, q.size, '#b9b0e8', 'center', 0);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
 function drawBackground(){
   const g = ctx.createLinearGradient(0, 0, 0, H);
   g.addColorStop(0, '#241a4d'); g.addColorStop(0.55, '#170f33'); g.addColorStop(1, '#0d0820');
@@ -1236,18 +1328,14 @@ function drawNamePlate(p, dead, scale){
   ctx.globalAlpha *= dead ? 0.8 : 1;
   txt(p.name, p.x, y, 20 * scale, dead ? '#8d86a6' : p.col, 'center', 5);
   if (!dead){
-    /* key indicator, always visible during play. The arrow beside it shows
-       which way the pass goes — it flips (and turns pink) under Reverse. */
-    const flip = G.fx.reverse > 0;
-    const kw = 42, totalW = kw;
-    const kx = p.x - totalW/2;
+    /* key indicator, always visible during play */
+    const kw = 42, kx = p.x - kw/2;
     ctx.fillStyle = 'rgba(10,8,20,.78)';
-    ctx.strokeStyle = flip ? '#ff6ec7' : hexA(p.col, 0.9);
+    ctx.strokeStyle = hexA(p.col, 0.9);
     ctx.lineWidth = 2.5;
     roundRect(kx, y + 12, kw, 24, 7); ctx.fill(); ctx.stroke();
     txt(l, kx + kw/2, y + 24.5, 14, '#e9e5ff', 'center', 0);
-    txt(flip ? '↺' : '↻', p.x + totalW/2 + 11, y + 24.5, 15,
-        flip ? '#ff6ec7' : 'rgba(200,190,240,.7)', 'center', 0);
+    txt('↻', p.x + kw/2 + 11, y + 24.5, 15, 'rgba(200,190,240,.7)', 'center', 0);
   }
   ctx.restore();
 }
@@ -1372,6 +1460,8 @@ function drawBomb(){
     txt(b.time.toFixed(1), numX, numY, 40 * big, col, 'center', 8);
   }
 
+  drawStickySeq();
+
   /* hold lock / sticky ring around the holder */
   if (b.state === 'held' && b.lock > 0 && b.hold < b.lock && G.state === ST.PLAY){
     const p = players[b.holder];
@@ -1383,6 +1473,48 @@ function drawBomb(){
     ctx.beginPath(); ctx.ellipse(0, 0, 62, 64, 0, -Math.PI/2, -Math.PI/2 + TAU * k); ctx.stroke();
     ctx.restore();
   }
+}
+
+/* The Sticky Bomb prompt: a big, legible run of key caps beside the stuck
+   player. Cleared caps light up; a wrong press flashes the whole row red. */
+function drawStickySeq(){
+  const b = G.bomb;
+  if (!b.sticky || !b.seq || b.state !== 'held' || G.state !== ST.PLAY) return;
+  const p = players[b.holder];
+  const bad = b.seqBad > 0;
+
+  /* sit on whichever side has more room so the caps never leave the arena */
+  const side = p.x < W/2 ? 1 : -1;
+  const cw = 56, gap = 10, totalW = b.seq.length * cw + (b.seq.length - 1) * gap;
+  const cx = clamp(p.x + side * (74 + totalW/2), totalW/2 + 20, W - totalW/2 - 20);
+  const cy = p.y - 150;
+  const x0 = cx - totalW/2;
+
+  ctx.save();
+  if (bad) ctx.translate(Math.sin(G.time * 70) * 5, 0);
+
+  /* backing panel */
+  ctx.fillStyle = 'rgba(10,6,20,.82)';
+  ctx.strokeStyle = bad ? '#ff4b52' : '#ffc043';
+  ctx.lineWidth = 4;
+  roundRect(x0 - 16, cy - 46, totalW + 32, 108, 16); ctx.fill(); ctx.stroke();
+  txt('SHAKE IT OFF!', cx, cy - 26, 19, bad ? '#ff8a8f' : '#ffd98a', 'center', 4);
+
+  for (let i = 0; i < b.seq.length; i++){
+    const kx = x0 + i * (cw + gap);
+    const done = i < b.seqPos, next = i === b.seqPos;
+    const pulse = next ? 1 + Math.sin(G.time * 9) * 0.06 : 1;
+    ctx.save();
+    ctx.translate(kx + cw/2, cy + 18); ctx.scale(pulse, pulse); ctx.translate(-(kx + cw/2), -(cy + 18));
+    ctx.fillStyle   = done ? 'rgba(255,192,67,.9)' : 'rgba(8,6,18,.9)';
+    ctx.strokeStyle = bad ? '#ff4b52' : done ? '#ffe08a' : next ? '#ffffff' : 'rgba(255,255,255,.3)';
+    ctx.lineWidth = next ? 4 : 3;
+    roundRect(kx, cy - 10, cw, 56, 11); ctx.fill(); ctx.stroke();
+    txt(shakeLabel(b.holder, b.seq[i]), kx + cw/2, cy + 19, 30,
+        done ? '#2a1c00' : next ? '#ffffff' : '#8a82ad', 'center', 4);
+    ctx.restore();
+  }
+  ctx.restore();
 }
 
 function drawPowerup(){
@@ -1454,7 +1586,6 @@ function drawHUD(){
     txt(name, ex + w/2, 31, 14, col, 'center', 3);
     txt(t.toFixed(1) + 's', ex + w/2, 49, 15, '#ffffff', 'center', 3);
   };
-  if (G.fx.reverse > 0) chip('REVERSED', G.fx.reverse, '#ff6ec7');
   if (G.fx.blind > 0)   chip('BLIND', G.fx.blind, '#c9c3e0');
   if (G.fx.warp > 0)    chip('3x SPEED', G.fx.warp, '#ff8a2b');
   if (G.fx.freeze > 0)  chip('FROZEN', G.fx.freeze, '#7fe3ff');
@@ -1650,6 +1781,8 @@ function drawLobby(){
       roundRect(kx, y + 26, kw, 52, 10); ctx.fill(); ctx.stroke();
       txt(l, kx + kw/2, y + 52, 24, p.joined ? '#ffffff' : '#8a82ad', 'center', 4);
       txt('PASS BOMB', kx + kw/2, y + 92, 11, '#8a82ad', 'center', 3);
+      const sl = LAYOUTS[G.layout].shakeLabels[i];
+      txt(sl[0] + ' / ' + sl[1] + '  SHAKE OFF GLUE', kx + kw/2, y + 110, 11, '#6f6796', 'center', 3);
     }
     ctx.restore();
     x += cw + gap;
@@ -1706,6 +1839,7 @@ function drawModeSelect(){
 
 function drawArenaScene(){
   drawBackground();
+  drawQMarks();
   drawArena();
   drawPowerup();
   const list = players.filter(p => p.joined).slice().sort((a,b) => a.y - b.y);
