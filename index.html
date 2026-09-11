@@ -700,8 +700,16 @@ function beginRound(){
 
 function explode(){
   const b = G.bomb;
-  const victim = b.state === 'flight' ? b.toIdx : b.holder;
   const pos = bombPos();
+  /* the blast kills whoever is physically closest to it, not merely the
+     player it happened to be addressed to                                */
+  const fallback = b.state === 'flight' ? b.toIdx : b.holder;
+  let victim = fallback, best = Infinity;
+  for (const i of aliveIds()){
+    const h = handPos(i);
+    const d = (h.x - pos.x) ** 2 + (h.y - pos.y) ** 2;
+    if (d < best){ best = d; victim = i; }
+  }
   const p = players[victim];
   G.victim = victim;
   b.state = 'none';
