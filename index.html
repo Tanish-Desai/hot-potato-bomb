@@ -70,15 +70,12 @@ const LAYOUTS = [
 ];
 const SEQ_LEN = 3;                       // sticky escape sequence length
 
-/* Possession clock. Sitting on the bomb and dumping it at the last second
-   is the cheapest way to win, so holding is on a timer of its own: three
-   escalating TOO LONG! warnings, then the bomb slips out of your hands and
-   throws itself. The clock only counts time you were actually free to throw,
-   so a Sticky Bomb's cooldown never counts against you. */
-const HOLD_WARN_AT    = 2;               // first warning, seconds after you could throw
-const HOLD_WARN_EVERY = 1;               // seconds between the later warnings
-const HOLD_WARNS      = 3;               // warnings before the bomb slips
-const HOLD_SLIP_AT    = HOLD_WARN_AT + HOLD_WARNS * HOLD_WARN_EVERY;
+/* Possession clock. Sitting on the bomb and dumping it at the last second is
+   the cheapest way to win, so holding is on a timer of its own: hang on for
+   two seconds and the bomb slips out of your hands and throws itself. The
+   clock only counts time you were actually free to throw, so a Sticky Bomb's
+   cooldown never counts against you. */
+const HOLD_SLIP_AT = 2;                  // seconds you may hold once free to throw
 
 /* ------------------------------------------------------------ powerups */
 /* mood: 'bad' = hurts someone (red banner), 'good' = helps (blue banner),
@@ -207,9 +204,7 @@ const SFX = {
   leave:   () => A.tone({ f:400, f2:180, dur:0.16, type:'square', gain:0.18 }),
   go:      () => { A.tone({f:880,dur:0.16,type:'square',gain:0.28}); A.tone({f:1320,dur:0.3,delay:0.1,type:'square',gain:0.24}); },
   beep:    () => A.tone({ f:600, dur:0.12, type:'square', gain:0.22 }),
-  /* possession clock: each warning sits a step higher, then the slip */
-  warn:    (n) => { A.tone({ f:520 + n*180, dur:0.12, type:'square', gain:0.22 });
-                    A.tone({ f:780 + n*180, dur:0.10, type:'square', gain:0.14, delay:0.09 }); },
+  /* the possession clock running out */
   slip:    () => { A.tone({ f:1200, f2:240, dur:0.3, type:'sawtooth', gain:0.26 });
                    A.noise({ f:500, f2:120, dur:0.25, q:1.4, gain:0.3 }); },
   throwW:  () => { A.noise({ f:400, f2:3200, dur:0.22, q:0.9, gain:0.3 }); A.tone({f:260,f2:620,dur:0.16,type:'sine',gain:0.12}); },
@@ -566,22 +561,11 @@ function freeHold(){
   return b.state === 'held' ? Math.max(0, b.hold - b.lock) : 0;
 }
 
-/* Warn, warn, warn, then take the bomb out of their hands. */
+/* Hold on too long and the bomb takes the decision out of your hands. */
 function holdClock(){
   const b = G.bomb;
   if (b.state !== 'held' || G.state !== ST.PLAY) return;
-  const t = freeHold(), p = players[b.holder];
-
-  if (b.warns < HOLD_WARNS && t >= HOLD_WARN_AT + b.warns * HOLD_WARN_EVERY){
-    b.warns++;
-    SFX.warn(b.warns);
-    p.sweat = 1;
-    floatText('TOO LONG!', p.x, p.y - 200, '#ff9a3b', 24 + b.warns * 4);
-    ringWave(p.x, p.y - 50, '#ff9a3b', 20, 78, 0.35);
-    G.shake = Math.max(G.shake, 2 + b.warns);
-    return;
-  }
-  if (t >= HOLD_SLIP_AT) slipThrow(b.holder);
+  if (freeHold() >= HOLD_SLIP_AT) slipThrow(b.holder);
 }
 
 /* The bomb throws itself — same arc as a real throw, none of the choice. */
@@ -645,7 +629,6 @@ function arrive(idx){
   b.lock = 0.5 + (b.pendingSticky ? 2.0 : 0);       // base cooldown (+ sticky)
   b.seq = b.sticky ? makeSeq() : null;              // shake-off sequence
   b.seqPos = 0; b.seqBad = 0;
-  b.warns = 0;                                      // fresh possession clock
   b.pendingSticky = false;
   p.catchT = 0.22;
   SFX.catchT();
@@ -748,7 +731,7 @@ function doHotSwap(){
   puff(cur.x, cur.y, '#b96bff', 14);
   const tgt = pick(aliveIds());
   b.state = 'held'; b.holder = tgt; b.hold = 0; b.lock = 0.5;
-  b.pendingSticky = false; b.sticky = false; b.seq = null; b.seqPos = 0; b.warns = 0;
+  b.pendingSticky = false; b.sticky = false; b.seq = null; b.seqPos = 0;
   const hp = handPos(tgt);
   puff(hp.x, hp.y, '#b96bff', 14);
   ringWave(hp.x, hp.y, '#b96bff', 10, 80, 0.4);
@@ -783,7 +766,7 @@ function beginRound(){
   G.bomb = {
     state: 'held', holder: pick(aliveIds()),
     time: t, max: t, hold: 0, lock: 0, sticky: false, pendingSticky: false,
-    seq: null, seqPos: 0, seqBad: 0, warns: 0,
+    seq: null, seqPos: 0, seqBad: 0,
     from: null, to: null, ctrl: null, fromIdx: -1, toIdx: -1, t: 0, dur: 0.5,
     rebound: false, trail: []
   };
@@ -1503,23 +1486,18 @@ function drawBomb(){
 
   drawStickySeq();
 
-  /* possession clock — an orange ring that closes in on the slip, plus a
-     pip per warning spent, so TOO LONG! never arrives out of nowhere */
-  if (b.state === 'held' && G.state === ST.PLAY && freeHold() >= HOLD_WARN_AT * 0.55){
+  /* possession clock — an orange ring closing in on the slip, so losing the
+     bomb is something you can see coming rather than a surprise */
+  if (b.state === 'held' && G.state === ST.PLAY && freeHold() > 0){
     const p = players[b.holder];
     const k = clamp(freeHold() / HOLD_SLIP_AT, 0, 1);
-    const urgent = b.warns >= HOLD_WARNS - 1;
+    const urgent = k > 0.6;
     ctx.save();
     ctx.translate(p.x, p.y - 46);
     ctx.globalAlpha = urgent ? 0.75 + Math.sin(G.time * 18) * 0.25 : 0.8;
     ctx.strokeStyle = urgent ? '#ff4b52' : '#ff9a3b';
     ctx.lineWidth = 6; ctx.lineCap = 'round';
     ctx.beginPath(); ctx.ellipse(0, 0, 70, 72, 0, -Math.PI/2, -Math.PI/2 + TAU * k); ctx.stroke();
-    ctx.globalAlpha = 1;
-    for (let i = 0; i < HOLD_WARNS; i++){
-      ctx.fillStyle = i < b.warns ? '#ff4b52' : 'rgba(255,255,255,.22)';
-      ctx.beginPath(); ctx.arc(-16 + i * 16, -86, 5, 0, TAU); ctx.fill();
-    }
     ctx.restore();
   }
 
