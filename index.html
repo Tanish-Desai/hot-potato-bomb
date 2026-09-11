@@ -1733,7 +1733,7 @@ function drawTitleToss(){
   const ax = 215, bxp = 1065, yb = 618;
   const x = dir > 0 ? lerp(ax, bxp, k) : lerp(bxp, ax, k);
   const y = yb - Math.sin(k * Math.PI) * 78;
-  const cols = [PDEF[0], PDEF[2]];
+  const cols = [PDEF[0], PDEF[1]];
   [ax, bxp].forEach((px, i) => {
     const p = { x: px, y: yb + 60, col: cols[i].col, lit: cols[i].lit, dark: cols[i].dark,
                 name:'', bob: G.time*2.4 + i, thr:0, thrDir:1, catchT:0, hitT:-1, i:-1, joined:false, alive:true, shield:false };
