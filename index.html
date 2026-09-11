@@ -53,35 +53,20 @@ const CENTER = { x: AR.cx, y: AR.cy - 46 };   // where powerups float / bomb fli
 /* ------------------------------------------------------------- players */
 const PDEF = [
   { name:'P1', col:'#ff4b52', lit:'#ff8a8f', dark:'#8e1218' },
-  { name:'P2', col:'#3fa0ff', lit:'#8fcaff', dark:'#0f4a8e' },
-  { name:'P3', col:'#4ddc6a', lit:'#a2f2b1', dark:'#12752c' },
-  { name:'P4', col:'#ffd23b', lit:'#ffe999', dark:'#9a7400' }
+  { name:'P2', col:'#3fa0ff', lit:'#8fcaff', dark:'#0f4a8e' }
 ];
 
-/* Two key layouts. One key per player — a single press passes the bomb on.
-   Physically spread out so four hands fit on one board. Multiple codes per
-   player so numpad works with NumLock on or off.
-
-   Each player also gets a pair of "shake" keys used only to wriggle out of a
-   Sticky Bomb. They are deliberately disjoint from every pass key so one
-   player's panic-mashing can never throw somebody else's bomb. */
+/* Fixed bindings: P1 owns Q/E, P2 owns the left/right arrows — two hands,
+   opposite ends of the board. The FIRST key of each pair is the pass key, a
+   single press of which sends the bomb on. Both keys of the pair spell out
+   the Sticky Bomb shake-off sequence. */
 const LAYOUTS = [
   { name:'STANDARD',
-    codes: [ ['KeyQ'], ['ArrowLeft'], ['KeyB'], ['Numpad1','End'] ],
-    labels:[ 'Q', '◀', 'B', 'N1' ],
-    shake: [ [['KeyA'],['KeyD']],
-             [['ArrowUp'],['ArrowDown']],
-             [['KeyN'],['KeyM']],
-             [['Numpad7','Home'],['Numpad9','PageUp']] ],
-    shakeLabels:[ ['A','D'], ['▲','▼'], ['N','M'], ['N7','N9'] ] },
-  { name:'NO-NUMPAD',
-    codes: [ ['KeyQ'], ['KeyZ'], ['Comma'], ['ArrowLeft'] ],
-    labels:[ 'Q', 'Z', ',', '◀' ],
-    shake: [ [['KeyW'],['KeyE']],
-             [['KeyX'],['KeyC']],
-             [['Period'],['Slash']],
-             [['ArrowUp'],['ArrowDown']] ],
-    shakeLabels:[ ['W','E'], ['X','C'], ['.','/'], ['▲','▼'] ] }
+    codes: [ ['KeyQ'], ['ArrowLeft'] ],
+    labels:[ 'Q', '◀' ],
+    shake: [ [['KeyQ'],['KeyE']],
+             [['ArrowLeft'],['ArrowRight']] ],
+    shakeLabels:[ ['Q','E'], ['◀','▶'] ] }
 ];
 const SEQ_LEN = 5;                       // sticky escape sequence length
 
@@ -139,13 +124,12 @@ const G = {
 const aliveIds = () => players.filter(p => p.alive).map(p => p.i);
 const joinedIds = () => players.filter(p => p.joined).map(p => p.i);
 
-/* difficulty per spec table — tightens as the match burns down */
+/* The fuse is a flat 10 seconds every round; only the powerup cadence moves. */
+const FUSE = 10;
 function diff(){
-  const n = aliveIds().length;
-  if (n <= 2)        return { tmin:5,  tmax:8,  pmin:2,   pmax:3,   tag:'FINAL' };
-  if (G.round === 1) return { tmin:10, tmax:15, pmin:4,   pmax:5,   tag:'ROUND 1' };
-  if (G.round === 2) return { tmin:8,  tmax:12, pmin:3,   pmax:4,   tag:'ROUND 2' };
-  return               { tmin:6,  tmax:10, pmin:2.5, pmax:3.5, tag:'ROUND ' + G.round };
+  if (G.round === 1) return { tmin:FUSE, tmax:FUSE, pmin:4,   pmax:5,   tag:'ROUND 1' };
+  if (G.round === 2) return { tmin:FUSE, tmax:FUSE, pmin:3,   pmax:4,   tag:'ROUND 2' };
+  return               { tmin:FUSE, tmax:FUSE, pmin:2.5, pmax:3.5, tag:'ROUND ' + G.round };
 }
 
 /* =====================================================================
@@ -448,7 +432,6 @@ function onKey(code){
         if (j.length){ players[j[j.length-1]].joined = false; SFX.leave(); }
         else { G.state = ST.TITLE; SFX.leave(); }
       }
-      else if (code === 'Digit1'){ G.layout = (G.layout + 1) % LAYOUTS.length; buildKeyMap(); SFX.ui(); }
       break;
 
     case ST.MODE:
@@ -464,8 +447,10 @@ function onKey(code){
     case ST.PLAY:
       if (code === 'Escape'){ G.prev = G.state; G.state = ST.PAUSE; musicStop(); SFX.ui(); break; }
       if (G.state === ST.PLAY){
+        /* A player's pass key is also one of their shake keys, so the shake
+           sequence only claims a press while that player is actually stuck. */
         const sk = shakeMap[code];
-        if (sk){ shakeInput(sk.p, sk.s); break; }
+        if (sk && stuckOn(sk.p)){ shakeInput(sk.p, sk.s); break; }
         if (k) tryThrow(k.p);
       }
       break;
@@ -630,9 +615,14 @@ function makeSeq(){
   return q;
 }
 
+const stuckOn = pi => {
+  const b = G.bomb;
+  return !!(b.sticky && b.seq && b.state === 'held' && b.holder === pi);
+};
+
 function shakeInput(pi, si){
   const b = G.bomb;
-  if (!b.sticky || b.state !== 'held' || b.holder !== pi || !b.seq) return;
+  if (!stuckOn(pi)) return;
   const p = players[pi];
   if (b.seq[b.seqPos] === si){
     b.seqPos++;
@@ -1731,7 +1721,7 @@ function drawTitle(){
   ctx.save(); ctx.globalAlpha = bl;
   txt('PRESS  SPACE  TO  START', W/2, 420, 38, '#ffffff', 'center', 8);
   ctx.restore();
-  txt('2–4 PLAYERS   |   ONE KEYBOARD   |   ZERO MERCY', W/2, 480, 20, '#8f86bd', 'center', 4);
+  txt('2 PLAYERS   |   ONE KEYBOARD   |   ZERO MERCY', W/2, 480, 20, '#8f86bd', 'center', 4);
 }
 
 function drawLobby(){
@@ -1739,7 +1729,7 @@ function drawLobby(){
   txt('WHO IS PLAYING?', W/2, 74, 52, '#ffffff', 'center', 10);
   txt('PRESS YOUR KEY TO JOIN', W/2, 122, 20, '#a99ee0', 'center', 4);
 
-  const n = 4, cw = 246, gap = 22;
+  const n = players.length, cw = 246, gap = 22;
   const totalW = n * cw + (n-1) * gap;
   let x = W/2 - totalW/2;
   for (let i = 0; i < n; i++){
@@ -1797,8 +1787,7 @@ function drawLobby(){
   } else {
     txt('NEED AT LEAST 2 PLAYERS', W/2, 570, 30, '#7d75a5', 'center', 6);
   }
-  txt('[1] KEY LAYOUT: ' + LAYOUTS[G.layout].name + '     [ESC] REMOVE LAST PLAYER / BACK',
-      W/2, 632, 17, '#6f6796', 'center', 4);
+  txt('[ESC] REMOVE LAST PLAYER / BACK', W/2, 632, 17, '#6f6796', 'center', 4);
   drawParts();
 }
 
